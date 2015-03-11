@@ -8,6 +8,15 @@
 
 #import "RLMObject+JSON.h"
 
+#import <Realm/RLMProperty.h>
+#import <Realm/RLMObjectSchema.h>
+
+// RLMSchema private interface
+@interface RLMSchema ()
+// class for string
++ (Class)classForString:(NSString *)className;
+@end
+
 #import <objc/runtime.h>
 
 static id MCValueFromInvocation(id object, SEL selector) {
@@ -47,12 +56,21 @@ static NSString *MCTypeStringFromPropertyKey(Class class, NSString *key) {
 
 @implementation RLMObject (JSON)
 
+static NSInteger const kCreateBatchSize = 100;
+
 + (NSArray *)createOrUpdateInRealm:(RLMRealm *)realm withJSONArray:(NSArray *)array {
+    NSInteger count = array.count;
     NSMutableArray *result = [NSMutableArray array];
     
-    for (NSDictionary *dictionary in array) {
-        id object = [self createOrUpdateInRealm:realm withJSONDictionary:dictionary];
-        [result addObject:object];
+    for (NSInteger index=0; index*kCreateBatchSize<count; index++) {
+        NSInteger size = MIN(kCreateBatchSize, count-index*kCreateBatchSize);
+        @autoreleasepool {
+            for (NSInteger subIndex=index*kCreateBatchSize; subIndex<size; subIndex++) {
+                NSDictionary *dictionary = array[subIndex];
+                id object = [self createOrUpdateInRealm:realm withJSONDictionary:dictionary];
+                [result addObject:object];
+            }
+        }
     }
     
     return [result copy];
@@ -142,13 +160,12 @@ static NSString *MCTypeStringFromPropertyKey(Class class, NSString *key) {
 	NSMutableDictionary *result = [NSMutableDictionary dictionary];
 	NSDictionary *mapping = [[self class] mc_inboundMapping];
     
-    Class modelClass = NSClassFromString([[self class] className]);
 	for (NSString *dictionaryKeyPath in mapping) {
 		NSString *objectKeyPath = mapping[dictionaryKeyPath];
 
 		id value = [dictionary valueForKeyPath:dictionaryKeyPath];
-        if (value && ![value isKindOfClass:[NSNull class]]) {
-			Class propertyClass = [modelClass mc_classForPropertyKey:objectKeyPath];
+		if (value && ![value isKindOfClass:[NSNull class]]) {
+			Class propertyClass = [[self class] mc_classForPropertyKey:objectKeyPath];
 
 			if ([propertyClass isSubclassOfClass:[RLMObject class]]) {
 				if (!value || [value isEqual:[NSNull null]]) {
@@ -167,7 +184,7 @@ static NSString *MCTypeStringFromPropertyKey(Class class, NSString *key) {
 			}
 			else if ([propertyClass isSubclassOfClass:[RLMArray class]]) {
                 RLMProperty *property = [self mc_propertyForPropertyKey:objectKeyPath];
-                Class elementClass = NSClassFromString(property.objectClassName);
+                Class elementClass = [RLMSchema classForString: property.objectClassName];
                 
                 NSMutableArray *array = [NSMutableArray array];
                 for (id item in(NSArray*) value) {
@@ -207,13 +224,12 @@ static NSString *MCTypeStringFromPropertyKey(Class class, NSString *key) {
 	NSMutableDictionary *result = [NSMutableDictionary dictionary];
 	NSDictionary *mapping = [[self class] mc_outboundMapping];
 
-    Class modelClass = NSClassFromString([[self class] className]);
 	for (NSString *objectKeyPath in mapping) {
 		NSString *dictionaryKeyPath = mapping[objectKeyPath];
 
 		id value = [self valueForKeyPath:objectKeyPath];
 		if (value) {
-			Class propertyClass = [modelClass mc_classForPropertyKey:objectKeyPath];
+			Class propertyClass = [[self class] mc_classForPropertyKey:objectKeyPath];
 
 			if ([propertyClass isSubclassOfClass:[RLMObject class]]) {
 				value = [value mc_createJSONDictionary];
@@ -226,7 +242,7 @@ static NSString *MCTypeStringFromPropertyKey(Class class, NSString *key) {
 				value = [array copy];
 			}
 			else {
-				NSValueTransformer *transformer = [modelClass mc_transformerForPropertyKey:objectKeyPath];
+				NSValueTransformer *transformer = [[self class] mc_transformerForPropertyKey:objectKeyPath];
 
 				if (transformer) {
 					value = [transformer reverseTransformedValue:value];
